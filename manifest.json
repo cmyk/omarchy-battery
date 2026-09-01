@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.aryan-techie.battery",
+  "name": "Better Battery",
+  "version": "0.1.0",
+  "author": "aryan-techie",
+  "license": "MIT",
+  "description": "Battery, power profile, and system stats, plus a charge-threshold toggle, Quick Dim, Travel Mode, hybrid-GPU status, and live watts draw with a short drain history.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Better Battery",
+    "description": "Battery/profile stats plus charge-threshold toggle, Quick Dim, Travel Mode, GPU status, watts draw",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
