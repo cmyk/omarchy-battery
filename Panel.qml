@@ -24,6 +24,18 @@ Panel {
   // icon, so the open-panel mark takes the painted width instead of the
   // icon-sized fraction of the slot the fallback assumes.
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
+
+  // ---- Charge threshold toggle, Quick Dim, Travel Mode, GPU status, watts
+  //      history -- new in this fork, not present in the built-in widget.
+  property bool chargeThresholdEnabled: false
+  property bool quickDimActive: false
+  property var quickDimSavedBrightness: null
+  property bool travelModeActive: false
+  property var travelModeSaved: null  // { profile, brightness, monitor }
+  property bool hybridGpuPresent: false
+  property string gpuStatusText: ""
+  property var drainSamples: []
+
   readonly property bool batteryPresent: {
     var device = UPower.displayDevice
     return !!(device && device.isPresent)
@@ -145,8 +157,13 @@ Panel {
     // Keep last known good data if a refresh briefly returns nothing — happens
     // around AC plug/unplug events. Avoids the section collapsing mid-transition.
     if (Object.keys(next).length === 0) return
-    if (targetName === "battery") batteryInfo = next
-    else systemInfo = next
+    if (targetName === "battery") {
+      batteryInfo = next
+      root.recordDrainSample()
+      root.refreshChargeThreshold()
+    } else {
+      systemInfo = next
+    }
   }
 
   function updateProfiles(raw) {
@@ -172,6 +189,82 @@ Panel {
   function togglePercentage() {
     root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
+  }
+
+  // ---- Charge threshold toggle. Calls UPower's own EnableChargeThreshold
+  // DBus method (UPower ships its own polkit policy for it) rather than
+  // writing the sysfs threshold file directly, which is root-owned on this
+  // hardware and every other laptop checked. The value itself (75-80% here)
+  // is whatever UPower/firmware already has configured -- this only flips
+  // whether it's *enforced*, matching what omarchy-battery-status's
+  // "threshold" field already reports as configured.
+  function refreshChargeThreshold() {
+    if (!root.batteryInfo.threshold) return
+    chargeThresholdReadProc.command = ["bash", "-c",
+      'gdbus call --system --dest org.freedesktop.UPower --object-path "$(upower -e | grep BAT | head -1)" --method org.freedesktop.DBus.Properties.Get org.freedesktop.UPower.Device ChargeThresholdEnabled']
+    chargeThresholdReadProc.running = true
+  }
+
+  function toggleChargeThreshold() {
+    if (chargeThresholdActionProc.running) return
+    var next = !root.chargeThresholdEnabled
+    chargeThresholdActionProc.command = ["bash", "-c",
+      'gdbus call --system --dest org.freedesktop.UPower --object-path "$(upower -e | grep BAT | head -1)" --method org.freedesktop.UPower.Device.EnableChargeThreshold "$1"',
+      "_", next ? "true" : "false"]
+    chargeThresholdActionProc.running = true
+  }
+
+  // ---- Quick Dim. Reads the laptop panel's current brightness first so
+  // undimming restores the exact prior value, not a guess. A read that
+  // can't resolve a number (docked, no internal panel active) means Quick
+  // Dim quietly does nothing rather than dimming something with no way
+  // back.
+  function toggleQuickDim() {
+    if (root.quickDimActive) {
+      root.quickDimActive = false
+      if (root.quickDimSavedBrightness !== null)
+        setBrightness(root.quickDimSavedBrightness)
+      root.quickDimSavedBrightness = null
+    } else {
+      quickDimReadProc.running = true
+    }
+  }
+
+  function setBrightness(percent) {
+    brightnessSetProc.command = ["omarchy", "brightness", "display", "--monitor", "eDP-2", "--no-osd", percent + "%"]
+    brightnessSetProc.running = true
+  }
+
+  // ---- Travel Mode. Saves profile + brightness + this monitor's refresh
+  // rate as one bundle, applies a travel-friendly preset, and restores all
+  // three on toggle-off. Session-only by design -- nothing here persists
+  // past a restart, same as the plugin this idea came from.
+  function toggleTravelMode() {
+    if (root.travelModeActive) {
+      var saved = root.travelModeSaved
+      root.travelModeActive = false
+      root.travelModeSaved = null
+      if (!saved) return
+      if (saved.profile) root.setProfile(saved.profile)
+      if (saved.brightness !== null) setBrightness(saved.brightness)
+      if (saved.monitor) {
+        travelMonitorProc.command = ["hyprctl", "keyword", "monitor",
+          Model.monitorKeywordLine(saved.monitor, saved.monitor.refreshRate)]
+        travelMonitorProc.running = true
+      }
+    } else {
+      travelModeReadProc.running = true
+    }
+  }
+
+  function refreshGpuStatus() {
+    if (!root.hybridGpuPresent) return
+    gpuStatusProc.running = true
+  }
+
+  function recordDrainSample() {
+    var watts = Model.parseWattsRate(root.batteryInfo.rate)
+    root.drainSamples = Model.appendDrainSample(root.drainSamples, watts, Date.now() / 1000, 600)
   }
 
   IpcHandler {
@@ -228,7 +321,101 @@ Panel {
     onExited: root.refresh()
   }
 
-  Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
+  Process {
+    id: chargeThresholdReadProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var value = Model.parseGdbusBoolean(text)
+        if (value !== null) root.chargeThresholdEnabled = value
+      }
+    }
+  }
+
+  Process { id: chargeThresholdActionProc; onExited: root.refreshChargeThreshold() }
+
+  Process {
+    id: quickDimReadProc
+    command: ["omarchy", "brightness", "display", "--monitor", "eDP-2"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var pct = Model.parseBrightnessPercent(text)
+        if (pct === null) return // no laptop panel to dim right now
+        root.quickDimSavedBrightness = pct
+        root.quickDimActive = true
+        root.setBrightness(40)
+      }
+    }
+  }
+
+  Process { id: brightnessSetProc }
+
+  Process {
+    id: travelModeReadProc
+    command: ["bash", "-c", 'omarchy brightness display --monitor eDP-2; echo "---"; hyprctl monitors -j']
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parts = String(text).split("---")
+        var brightnessPct = Model.parseBrightnessPercent(parts[0])
+        var monitors = []
+        try { monitors = JSON.parse(parts[1] || "[]") } catch (e) { monitors = [] }
+        var focused = null
+        for (var i = 0; i < monitors.length; i++) if (monitors[i].focused) { focused = monitors[i]; break }
+        if (!focused && monitors.length > 0) focused = monitors[0]
+
+        root.travelModeSaved = { profile: root.activeProfile, brightness: brightnessPct, monitor: focused }
+        root.travelModeActive = true
+
+        root.setProfile("power-saver")
+        if (brightnessPct !== null) root.setBrightness(40)
+        if (focused) {
+          travelMonitorProc.command = ["hyprctl", "keyword", "monitor", Model.monitorKeywordLine(focused, 60)]
+          travelMonitorProc.running = true
+        }
+      }
+    }
+  }
+
+  Process { id: travelMonitorProc }
+
+  Process {
+    id: hybridGpuCheckProc
+    command: ["omarchy", "hw", "hybrid", "gpu"]
+    onExited: function(exitCode) {
+      root.hybridGpuPresent = exitCode === 0
+      if (root.hybridGpuPresent) root.refreshGpuStatus()
+    }
+  }
+
+  Process {
+    id: gpuStatusProc
+    command: ["nvidia-smi", "--query-gpu=power.draw,utilization.gpu", "--format=csv,noheader,nounits"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parts = String(text).split(",")
+        var watts = parseFloat(parts[0])
+        var util = parseInt(parts[1], 10)
+        root.gpuStatusText = isFinite(watts)
+          ? ("NVIDIA " + watts.toFixed(1) + "W" + (isFinite(util) ? ", " + util + "% util" : ""))
+          : ""
+      }
+    }
+  }
+
+  Component.onCompleted: hybridGpuCheckProc.running = true
+
+  Timer {
+    interval: 5000
+    running: root.opened
+    repeat: true
+    onTriggered: {
+      root.refresh()
+      if (root.hybridGpuPresent) root.refreshGpuStatus()
+    }
+  }
 
   // Rotate the status phrase while the panel is open and we're in a
   // rotating state (charging or on battery). The text swap is wrapped in a
@@ -499,6 +686,159 @@ Panel {
                     root.profileIndex = index
                   }
                 }
+              }
+            }
+          }
+        }
+
+        // ---------- Charge threshold toggle. Only shown once the battery
+        //            actually reports a configured threshold -- the same
+        //            gate omarchy-battery-status already applies before
+        //            printing the "threshold" field. ----------
+        Item {
+          visible: !!root.batteryInfo.threshold
+          width: parent.width
+          height: visible ? chargeThresholdColumn.implicitHeight : 0
+
+          Column {
+            id: chargeThresholdColumn
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSeparator { foreground: root.bar.foreground }
+
+            Toggle {
+              width: parent.width
+              label: "Charge threshold"
+              description: root.batteryInfo.threshold
+                ? ("Hold at " + root.batteryInfo.threshold + " to protect battery health")
+                : "Hold charge below the firmware limit"
+              checked: root.chargeThresholdEnabled
+              foreground: root.bar.foreground
+              accent: Color.accent
+              fontFamily: root.bar.fontFamily
+              onClicked: root.toggleChargeThreshold()
+            }
+          }
+        }
+
+        // ---------- Quick Dim + Travel Mode ----------
+        PanelSeparator { foreground: root.bar.foreground }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader {
+            text: "QUICK ACTIONS"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              iconText: "󰃞"
+              iconSize: Style.font.title
+              text: root.quickDimActive ? "Undim" : "Quick Dim"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+              bordered: true
+              active: root.quickDimActive
+              onClicked: root.toggleQuickDim()
+            }
+
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              iconText: "󰀚"
+              iconSize: Style.font.title
+              text: root.travelModeActive ? "End Travel" : "Travel Mode"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              horizontalPadding: Style.spacing.controlPaddingX
+              verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+              bordered: true
+              active: root.travelModeActive
+              onClicked: root.toggleTravelMode()
+            }
+          }
+        }
+
+        // ---------- GPU status. Hybrid-GPU hardware only. ----------
+        Item {
+          visible: root.hybridGpuPresent && root.gpuStatusText !== ""
+          width: parent.width
+          height: visible ? gpuColumn.implicitHeight : 0
+
+          Column {
+            id: gpuColumn
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.bar.foreground }
+
+            InfoPair { label: "GPU"; value: root.gpuStatusText }
+          }
+        }
+
+        // ---------- Power draw history: a short sparkline, no
+        //            persistence -- see Model.appendDrainSample. ----------
+        Item {
+          visible: root.drainSamples.length > 1
+          width: parent.width
+          height: visible ? drainColumn.implicitHeight : 0
+
+          Column {
+            id: drainColumn
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.bar.foreground }
+
+            PanelSectionHeader {
+              text: "POWER DRAW (LAST 10 MIN)"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Canvas {
+              id: sparkline
+              width: parent.width
+              height: Style.space(40)
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.clearRect(0, 0, width, height)
+                var samples = root.drainSamples
+                if (samples.length < 2) return
+                var maxW = 0
+                for (var i = 0; i < samples.length; i++) maxW = Math.max(maxW, samples[i].w)
+                if (maxW <= 0) maxW = 1
+                var minT = samples[0].t
+                var maxT = samples[samples.length - 1].t
+                var spanT = Math.max(1, maxT - minT)
+
+                ctx.strokeStyle = Style.selectedStateColor(root.bar.foreground, Color.accent)
+                ctx.lineWidth = 1.5
+                ctx.beginPath()
+                for (var j = 0; j < samples.length; j++) {
+                  var x = ((samples[j].t - minT) / spanT) * width
+                  var y = height - (samples[j].w / maxW) * height
+                  if (j === 0) ctx.moveTo(x, y)
+                  else ctx.lineTo(x, y)
+                }
+                ctx.stroke()
+              }
+
+              Connections {
+                target: root
+                function onDrainSamplesChanged() { sparkline.requestPaint() }
               }
             }
           }

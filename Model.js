@@ -89,6 +89,55 @@ function modeLabel(device, onBattery, states) {
   return "Charging"
 }
 
+// ---- Charge-threshold toggle. This calls UPower's own
+// EnableChargeThreshold DBus method (UPower ships its own polkit policy for
+// it), not a raw sysfs write -- see Panel.qml for the full reasoning.
+// `gdbus call` prints a boolean property read as "(<true>,)" / "(<false>,)".
+function parseGdbusBoolean(raw) {
+  var text = String(raw || "")
+  if (text.indexOf("true") !== -1) return true
+  if (text.indexOf("false") !== -1) return false
+  return null
+}
+
+// ---- Quick Dim / Travel Mode brightness. "40%" / "40" -> 40, or null on
+// anything that doesn't parse (no laptop panel connected, DDC failure,
+// etc.) -- callers skip the brightness leg of the preset rather than
+// saving/restoring a bogus value.
+function parseBrightnessPercent(raw) {
+  var text = String(raw || "").replace(/^\s+|\s+$/g, "").replace(/%$/, "")
+  var value = parseInt(text, 10)
+  if (!isFinite(value) || value < 0 || value > 100) return null
+  return value
+}
+
+// ---- Travel Mode monitor refresh rate. Rebuilds the `hyprctl keyword
+// monitor` argument for one monitor with only the refresh rate changed,
+// from a `hyprctl monitors -j` entry -- resolution, position, and scale
+// round-trip unchanged so this can't accidentally move or resize anything.
+function monitorKeywordLine(monitorInfo, refreshRate) {
+  var m = monitorInfo || {}
+  var rate = refreshRate || m.refreshRate
+  return m.name + "," + m.width + "x" + m.height + "@" + rate
+    + "," + m.x + "x" + m.y + "," + m.scale
+}
+
+// ---- Watts drain history: a short in-memory sparkline, not a database.
+function parseWattsRate(rateText) {
+  var value = parseFloat(String(rateText || ""))
+  return isFinite(value) ? value : null
+}
+
+// Appends one sample and drops anything older than maxAgeSeconds -- a
+// fixed-size rolling window instead of an ever-growing array.
+function appendDrainSample(samples, watts, now, maxAgeSeconds) {
+  var next = (samples || []).slice()
+  if (watts !== null) next.push({ t: now, w: watts })
+  var cutoff = now - maxAgeSeconds
+  while (next.length > 0 && next[0].t < cutoff) next.shift()
+  return next
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     clampIndex: clampIndex,
@@ -99,6 +148,11 @@ if (typeof module !== "undefined") {
     batteryFraction: batteryFraction,
     chargeThresholdActive: chargeThresholdActive,
     batteryIcon: batteryIcon,
-    modeLabel: modeLabel
+    modeLabel: modeLabel,
+    parseGdbusBoolean: parseGdbusBoolean,
+    parseBrightnessPercent: parseBrightnessPercent,
+    monitorKeywordLine: monitorKeywordLine,
+    parseWattsRate: parseWattsRate,
+    appendDrainSample: appendDrainSample
   }
 }
