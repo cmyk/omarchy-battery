@@ -802,16 +802,40 @@ Panel {
 
             PanelSeparator { foreground: root.bar.foreground }
 
-            PanelSectionHeader {
-              text: "POWER DRAW (LAST 10 MIN)"
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(drainHeader.implicitHeight, drainNow.implicitHeight)
+
+              PanelSectionHeader {
+                id: drainHeader
+                text: "POWER DRAW (LAST 10 MIN)"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              // A flat near-zero line reads as "broken" without this --
+              // the number makes a quiet graph legible on its own.
+              InfoValue {
+                id: drainNow
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.drainSamples.length > 0
+                  ? root.drainSamples[root.drainSamples.length - 1].w.toFixed(1) + "W"
+                  : ""
+              }
             }
 
             Canvas {
               id: sparkline
               width: parent.width
               height: Style.space(40)
+              // Vertical inset so a flat (near-zero draw) line sits a few
+              // pixels off the bottom edge instead of hugging it -- glued
+              // to the edge, a flat line at 0 is functionally invisible.
+              readonly property real topInset: Style.space(4)
+              readonly property real bottomInset: Style.space(6)
               onPaint: {
                 var ctx = getContext("2d")
                 ctx.clearRect(0, 0, width, height)
@@ -823,13 +847,14 @@ Panel {
                 var minT = samples[0].t
                 var maxT = samples[samples.length - 1].t
                 var spanT = Math.max(1, maxT - minT)
+                var plotHeight = height - topInset - bottomInset
 
                 ctx.strokeStyle = Style.selectedStateColor(root.bar.foreground, Color.accent)
                 ctx.lineWidth = 1.5
                 ctx.beginPath()
                 for (var j = 0; j < samples.length; j++) {
                   var x = ((samples[j].t - minT) / spanT) * width
-                  var y = height - (samples[j].w / maxW) * height
+                  var y = topInset + plotHeight - (samples[j].w / maxW) * plotHeight
                   if (j === 0) ctx.moveTo(x, y)
                   else ctx.lineTo(x, y)
                 }
