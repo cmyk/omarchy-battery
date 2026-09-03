@@ -26,7 +26,7 @@ Panel {
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
 
   // ---- Charge threshold toggle, Quick Dim, Travel Mode, GPU status, watts
-  //      history -- new in this fork, not present in the built-in widget.
+  //      history, and application impact -- not present in the built-in widget.
   property bool chargeThresholdEnabled: false
   property bool quickDimActive: false
   property var quickDimSavedBrightness: null
@@ -35,6 +35,8 @@ Panel {
   property bool hybridGpuPresent: false
   property string gpuStatusText: ""
   property var drainSamples: []
+  property var powerImpactApps: []
+  readonly property string powerImpactScript: String(Qt.resolvedUrl("power-impact.sh")).replace("file://", "")
 
   readonly property bool batteryPresent: {
     var device = UPower.displayDevice
@@ -61,12 +63,12 @@ Panel {
 
   function batteryIcon() {
     var device = UPower.displayDevice
-    return Model.batteryIcon(device, root.discharging, upowerStates())
+    return Model.batteryIcon(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
   }
 
   function modeLabel() {
     var device = UPower.displayDevice
-    return Model.modeLabel(device, root.discharging, upowerStates())
+    return Model.modeLabel(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
   }
 
   function profileIcon(name) {
@@ -83,7 +85,7 @@ Panel {
   }
   readonly property bool chargeThresholdActive: {
     var device = UPower.displayDevice
-    return Model.chargeThresholdActive(device, root.discharging, upowerStates())
+    return Model.chargeThresholdActive(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
   }
   readonly property bool batteryFull: fullyCharged || (!root.discharging && batteryFraction >= 1)
   readonly property bool batteryFlowIdle: batteryFull || chargeThresholdActive
@@ -150,6 +152,7 @@ Panel {
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
     if (!systemProc.running) systemProc.running = true
+    if (opened && !powerImpactProc.running) powerImpactProc.running = true
   }
 
   function updateKeyValue(raw, targetName) {
@@ -265,6 +268,10 @@ Panel {
   function recordDrainSample() {
     var watts = Model.parseWattsRate(root.batteryInfo.rate)
     root.drainSamples = Model.appendDrainSample(root.drainSamples, watts, Date.now() / 1000, 600)
+  }
+
+  function updatePowerImpact(raw) {
+    root.powerImpactApps = Model.parsePowerImpact(raw)
   }
 
   IpcHandler {
@@ -403,6 +410,12 @@ Panel {
           : ""
       }
     }
+  }
+
+  Process {
+    id: powerImpactProc
+    command: [root.powerImpactScript]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updatePowerImpact(text) }
   }
 
   Component.onCompleted: hybridGpuCheckProc.running = true
@@ -559,7 +572,7 @@ Panel {
           Text {
             id: heroPercent
             textFormat: Text.PlainText
-            text: root.batteryInfo.percentage || "—"
+            text: Math.round(root.batteryFraction * 100) + "%"
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.displayLarge
@@ -628,12 +641,12 @@ Panel {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
             InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit" : (root.discharging ? "Time left" : "Time to full")
-              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFlowIdle ? "-" : (root.batteryInfo.time || "—"))
+              label: root.chargeThresholdActive ? "Charge limit" : (root.batteryFull ? "Battery state" : (root.discharging ? "Time left" : "Time to full"))
+              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFull ? "Fully charged" : (root.batteryInfo.time || "—"))
             }
             InfoPair {
-              label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
-              value: root.chargeThresholdActive ? "Holding" : (root.batteryFull ? "-" : (root.batteryInfo.rate || ""))
+              label: root.chargeThresholdActive ? "Battery state" : (root.batteryFull ? "Charge rate" : (root.discharging ? "Discharging" : "Charging"))
+              value: root.chargeThresholdActive ? "Holding" : (root.batteryInfo.rate || "0W")
             }
           }
         }
@@ -865,6 +878,49 @@ Panel {
                 target: root
                 function onDrainSamplesChanged() { sparkline.requestPaint() }
               }
+            }
+          }
+        }
+
+        // Linux does not expose reliable per-app watts, so rank grouped
+        // applications by CPU time consumed during a one-second sample.
+        // Sampling runs only while this panel is open.
+        Item {
+          visible: root.powerImpactApps.length > 0
+          width: parent.width
+          height: visible ? powerImpactColumn.implicitHeight : 0
+
+          Column {
+            id: powerImpactColumn
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.bar.foreground }
+
+            PanelSectionHeader {
+              text: "POWER IMPACT (RECENT CPU)"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Repeater {
+              model: root.powerImpactApps
+              delegate: InfoPair {
+                required property var modelData
+                label: modelData.name
+                value: modelData.impact + "  ·  " + modelData.cpu.toFixed(0) + "% CPU"
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "Estimate from recent CPU activity; applications do not expose exact watts."
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              color: root.bar.foreground
+              opacity: 0.45
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
             }
           }
         }
