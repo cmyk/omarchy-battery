@@ -36,8 +36,9 @@ Panel {
   property string gpuStatusText: ""
   property var drainSamples: []
   property var powerImpactApps: []
-  property var displayBrightness: null
+  property var batteryTemperature: null
   readonly property string powerImpactScript: String(Qt.resolvedUrl("power-impact.sh")).replace("file://", "")
+  readonly property string batteryTemperatureScript: String(Qt.resolvedUrl("battery-temperature.sh")).replace("file://", "")
 
   readonly property bool batteryPresent: {
     var device = UPower.displayDevice
@@ -155,7 +156,7 @@ Panel {
     if (!systemProc.running) systemProc.running = true
     if (opened) {
       if (!powerImpactProc.running) powerImpactProc.running = true
-      if (!displayImpactProc.running) displayImpactProc.running = true
+      if (!batteryTemperatureProc.running) batteryTemperatureProc.running = true
     }
   }
 
@@ -278,8 +279,8 @@ Panel {
     root.powerImpactApps = Model.parsePowerImpact(raw)
   }
 
-  function updateDisplayBrightness(raw) {
-    root.displayBrightness = Model.parseBrightnessPercent(raw)
+  function updateBatteryTemperature(raw) {
+    root.batteryTemperature = Model.parseBatteryTemperature(raw)
   }
 
   IpcHandler {
@@ -427,9 +428,9 @@ Panel {
   }
 
   Process {
-    id: displayImpactProc
-    command: ["omarchy", "brightness", "display"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateDisplayBrightness(text) }
+    id: batteryTemperatureProc
+    command: [root.batteryTemperatureScript]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateBatteryTemperature(text) }
   }
 
   Component.onCompleted: hybridGpuCheckProc.running = true
@@ -649,6 +650,11 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair { label: "Battery size"; value: root.batteryInfo.size || "" }
             InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
+            InfoPair {
+              visible: root.batteryTemperature !== null
+              label: "Temperature"
+              value: root.batteryTemperature !== null ? root.batteryTemperature.toFixed(1) + "°C" : ""
+            }
           }
 
           Column {
@@ -896,11 +902,11 @@ Panel {
           }
         }
 
-        // Linux does not expose reliable per-source watts, so show display
-        // brightness and rank applications by CPU time consumed during a
-        // one-second sample. Sampling runs only while this panel is open.
+        // Linux does not expose reliable per-app watts, so rank applications
+        // by CPU time consumed during a one-second sample. Sampling runs only
+        // while this panel is open.
         Item {
-          visible: root.displayBrightness !== null || root.powerImpactApps.length > 0
+          visible: root.powerImpactApps.length > 0
           width: parent.width
           height: visible ? powerImpactColumn.implicitHeight : 0
 
@@ -912,15 +918,9 @@ Panel {
             PanelSeparator { foreground: root.bar.foreground }
 
             PanelSectionHeader {
-              text: "POWER IMPACT (ESTIMATED)"
+              text: "POWER IMPACT (RECENT CPU)"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
-            }
-
-            InfoPair {
-              visible: root.displayBrightness !== null
-              label: "Display"
-              value: Model.displayImpactBand(root.displayBrightness) + "  ·  " + root.displayBrightness + "% brightness"
             }
 
             Repeater {
@@ -934,7 +934,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Display impact is estimated from brightness; app impact from recent CPU. Exact per-source watts are not exposed."
+              text: "Estimate from recent CPU activity; applications do not expose exact watts."
               textFormat: Text.PlainText
               wrapMode: Text.Wrap
               color: root.bar.foreground

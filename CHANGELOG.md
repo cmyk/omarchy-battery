@@ -20,8 +20,9 @@ All notable user-facing changes to this plugin. Format loosely follows [Keep a C
 
 - Add a Power Impact section that groups recent process CPU activity by
   application and shows the three busiest applications while the panel is
-  open, plus display impact derived from brightness, with an explicit estimate
-  disclaimer.
+  open, with an explicit estimate disclaimer.
+- Show the battery's real temperature in the stats when Linux exposes a
+  battery temperature sensor.
 
 ## v0.1.0 — Initial release
 
