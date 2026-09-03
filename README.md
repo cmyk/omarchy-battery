@@ -72,9 +72,10 @@ New in this plugin:
   minutes' draw, plus a live watts readout. No database, no persistence;
   it's gone the moment the shell restarts.
 - **Power impact** — ranks the three busiest applications from a recent
-  one-second CPU sample, grouped by process name. It samples only while the
-  panel is open and labels the result as an estimate rather than pretending
-  Linux exposes exact per-application watts.
+  one-second CPU sample, grouped by process name, and shows display impact
+  from the current brightness. It samples only while the panel is open and
+  labels both as estimates rather than pretending Linux exposes exact
+  per-source watts.
 
 ## Install
 
@@ -133,8 +134,9 @@ pill to open the panel, click a profile pill to switch it.
   of it in memory — no new subprocess, no database.
 - **Power impact**: `power-impact.sh` reads per-process CPU counters twice,
   one second apart, groups the deltas by application name, and returns the
-  three busiest groups. It runs only while the panel is open. CPU activity is
-  a useful power proxy, not a per-application watt measurement.
+  three busiest groups. Display impact is classified from the current
+  brightness. Both update only while the panel is open; they are useful
+  proxies, not per-source watt measurements.
 - **Settings**: none of the five add persisted preferences. Charge
   threshold reflects live hardware state; Quick Dim/Travel Mode are
   session-only toggles; GPU status and power draw are live/derived.

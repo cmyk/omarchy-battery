@@ -144,6 +144,14 @@ function parsePowerImpact(raw) {
   return rows
 }
 
+function displayImpactBand(percent) {
+  var value = Number(percent)
+  if (!isFinite(value) || value < 0 || value > 100) return ""
+  if (value >= 70) return "High"
+  if (value >= 30) return "Medium"
+  return "Low"
+}
+
 // Appends one sample and drops anything older than maxAgeSeconds -- a
 // fixed-size rolling window instead of an ever-growing array.
 function appendDrainSample(samples, watts, now, maxAgeSeconds) {
@@ -170,6 +178,7 @@ if (typeof module !== "undefined") {
     monitorKeywordLine: monitorKeywordLine,
     parseWattsRate: parseWattsRate,
     parsePowerImpact: parsePowerImpact,
+    displayImpactBand: displayImpactBand,
     appendDrainSample: appendDrainSample
   }
 }

@@ -36,6 +36,7 @@ Panel {
   property string gpuStatusText: ""
   property var drainSamples: []
   property var powerImpactApps: []
+  property var displayBrightness: null
   readonly property string powerImpactScript: String(Qt.resolvedUrl("power-impact.sh")).replace("file://", "")
 
   readonly property bool batteryPresent: {
@@ -152,7 +153,10 @@ Panel {
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
     if (!systemProc.running) systemProc.running = true
-    if (opened && !powerImpactProc.running) powerImpactProc.running = true
+    if (opened) {
+      if (!powerImpactProc.running) powerImpactProc.running = true
+      if (!displayImpactProc.running) displayImpactProc.running = true
+    }
   }
 
   function updateKeyValue(raw, targetName) {
@@ -272,6 +276,10 @@ Panel {
 
   function updatePowerImpact(raw) {
     root.powerImpactApps = Model.parsePowerImpact(raw)
+  }
+
+  function updateDisplayBrightness(raw) {
+    root.displayBrightness = Model.parseBrightnessPercent(raw)
   }
 
   IpcHandler {
@@ -416,6 +424,12 @@ Panel {
     id: powerImpactProc
     command: [root.powerImpactScript]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updatePowerImpact(text) }
+  }
+
+  Process {
+    id: displayImpactProc
+    command: ["omarchy", "brightness", "display"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateDisplayBrightness(text) }
   }
 
   Component.onCompleted: hybridGpuCheckProc.running = true
@@ -641,7 +655,7 @@ Panel {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
             InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit" : (root.batteryFull ? "Battery state" : (root.discharging ? "Time left" : "Time to full"))
+              label: root.chargeThresholdActive ? "Charge limit" : (root.batteryFull ? "State" : (root.discharging ? "Time left" : "Time to full"))
               value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFull ? "Fully charged" : (root.batteryInfo.time || "—"))
             }
             InfoPair {
@@ -882,11 +896,11 @@ Panel {
           }
         }
 
-        // Linux does not expose reliable per-app watts, so rank grouped
-        // applications by CPU time consumed during a one-second sample.
-        // Sampling runs only while this panel is open.
+        // Linux does not expose reliable per-source watts, so show display
+        // brightness and rank applications by CPU time consumed during a
+        // one-second sample. Sampling runs only while this panel is open.
         Item {
-          visible: root.powerImpactApps.length > 0
+          visible: root.displayBrightness !== null || root.powerImpactApps.length > 0
           width: parent.width
           height: visible ? powerImpactColumn.implicitHeight : 0
 
@@ -898,9 +912,15 @@ Panel {
             PanelSeparator { foreground: root.bar.foreground }
 
             PanelSectionHeader {
-              text: "POWER IMPACT (RECENT CPU)"
+              text: "POWER IMPACT (ESTIMATED)"
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
+            }
+
+            InfoPair {
+              visible: root.displayBrightness !== null
+              label: "Display"
+              value: Model.displayImpactBand(root.displayBrightness) + "  ·  " + root.displayBrightness + "% brightness"
             }
 
             Repeater {
@@ -914,7 +934,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "Estimate from recent CPU activity; applications do not expose exact watts."
+              text: "Display impact is estimated from brightness; app impact from recent CPU. Exact per-source watts are not exposed."
               textFormat: Text.PlainText
               wrapMode: Text.Wrap
               color: root.bar.foreground
@@ -928,16 +948,30 @@ Panel {
     }
   }
 
-  component InfoPair: Row {
+  component InfoPair: Item {
     property string label: ""
     property string value: ""
 
     width: parent.width
-    spacing: Style.space(8)
+    implicitHeight: Math.max(infoLabel.implicitHeight, infoValue.implicitHeight)
 
-    InfoLabel { text: label }
-    Item { width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2); height: 1 }
-    InfoValue { text: value }
+    InfoLabel {
+      id: infoLabel
+      text: label
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.max(0, parent.width - infoValue.width - Style.space(8))
+      elide: Text.ElideRight
+    }
+    InfoValue {
+      id: infoValue
+      text: value
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.min(implicitWidth, parent.width * 0.65)
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+    }
   }
 
   component InfoLabel: Text {

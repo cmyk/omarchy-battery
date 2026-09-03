@@ -13,12 +13,15 @@ All notable user-facing changes to this plugin. Format loosely follows [Keep a C
   contradictory "Time to full / Charging" rows when the battery is full.
 - Round the panel percentage from the same live UPower value as the bar, so a
   value such as 92.99% no longer appears as 92% in one place and 93% in another.
+- Constrain stat labels and values to their row, preventing long state text
+  from being clipped at the panel's right edge.
 
 ### Added
 
 - Add a Power Impact section that groups recent process CPU activity by
   application and shows the three busiest applications while the panel is
-  open, with an explicit estimate disclaimer.
+  open, plus display impact derived from brightness, with an explicit estimate
+  disclaimer.
 
 ## v0.1.0 — Initial release
 
