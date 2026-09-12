@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 loader = importlib.machinery.SourceFileLoader('controller', str(Path(__file__).with_name('omarchy-charge')))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -25,6 +26,7 @@ class ChargingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         c.STATE = Path(self.temp.name) / 'state.json'
+        c.LOCK = Path(self.temp.name) / 'controller.lock'
         self.backend = FakeBackend()
         self.state = {'limit': 80, 'topup': False}
     def test_topup_then_unplug_restores_saved_limit(self):
@@ -69,5 +71,23 @@ class ChargingTests(unittest.TestCase):
         state = c.reconcile(self.backend, state)
         self.assertEqual(self.backend.current, 80)
         self.assertEqual(state['error'], '')
+
+    def test_poll_reuses_discovered_backend(self):
+        cache = []
+        with patch.object(c, 'MacBackend', return_value=self.backend) as factory:
+            c.step('poll', backend_cache=cache)
+            c.step('poll', backend_cache=cache)
+            self.assertEqual(factory.call_count, 1)
+
+    def test_unchanged_poll_skips_disk_write_until_heartbeat(self):
+        with patch.object(c.time, 'time', return_value=100):
+            state = c.reconcile(self.backend, self.state)
+        with patch.object(c.os, 'replace', wraps=c.os.replace) as replace:
+            with patch.object(c.time, 'time', return_value=105):
+                state = c.reconcile(self.backend, state)
+            self.assertEqual(replace.call_count, 0)
+            with patch.object(c.time, 'time', return_value=115):
+                state = c.reconcile(self.backend, state)
+            self.assertEqual(replace.call_count, 1)
 
 if __name__ == '__main__': unittest.main()

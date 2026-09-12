@@ -61,6 +61,12 @@ class MacBackend:
         return any(p.read_text().strip() == '1' for p in adapters)
 
 def save(state):
+    # Keep the heartbeat, but avoid replacing a disk file twice every poll.
+    if STATE.exists():
+        old = json.loads(STATE.read_text())
+        meaningful = lambda obj: {k: v for k, v in obj.items() if k != 'updated'}
+        if meaningful(old) == meaningful(state) and state.get('updated', 0) - old.get('updated', 0) < 15:
+            return
     STATE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     temporary = STATE.with_suffix('.tmp')
     temporary.write_text(json.dumps(state) + '\n')
@@ -85,9 +91,11 @@ def reconcile(backend, state, action='poll', value=None):
     save(state)
     target = 100 if state['topup'] else state['limit']
     try:
-        if backend.read() != target:
+        actual = backend.read()
+        if actual != target:
             backend.write(target)
-        state['effective'] = backend.read()
+            actual = backend.read()
+        state['effective'] = actual
     except Exception as error:
         state['error'] = str(error)
         save(state)
@@ -95,11 +103,15 @@ def reconcile(backend, state, action='poll', value=None):
     save(state)
     return state
 
-def step(action, value=None):
+def step(action, value=None, backend_cache=None):
     LOCK.touch(mode=0o600, exist_ok=True)
     with LOCK.open('r+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        backend = MacBackend()
+        # Discovery scans many SMC keys. Reuse its result while the service lives.
+        # Each read still validates the selected key name and value.
+        backend = backend_cache[0] if backend_cache else MacBackend()
+        if backend_cache is not None and not backend_cache:
+            backend_cache.append(backend)
         state = json.loads(STATE.read_text()) if STATE.exists() else {
             'limit': backend.read(), 'topup': False
         }
@@ -124,10 +136,12 @@ def main():
     if action != 'watch':
         print(json.dumps(step(action, value)))
         return
+    backend_cache = []
     while True:
         try:
-            step('poll')
+            step('poll', backend_cache=backend_cache)
         except Exception as error:
+            backend_cache.clear()
             print(str(error), file=sys.stderr, flush=True)
         time.sleep(5)
 

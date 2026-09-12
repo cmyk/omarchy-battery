@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.aryan-techie.battery",
   "name": "Better Battery",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "aryan-techie / AROICE; maintained fork by cmyk",
   "license": "MIT",
   "description": "Battery, power profile, temperature, and system stats, plus charge protection, quick actions, live watts history, and application power impact.",

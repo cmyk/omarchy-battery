@@ -15,7 +15,6 @@ Panel {
   // permits — needed for the togglePercentage method below.
   manageIpc: false
   property var batteryInfo: ({})
-  property var systemInfo: ({})
   property var profiles: []
   property string activeProfile: ""
   property int profileIndex: 0
@@ -32,7 +31,8 @@ Panel {
   property int pendingLimit: 80
   property bool limitEdited: false
   property string chargeError: ""
-  readonly property bool chargeControlAvailable: chargeControl.supported === true && (Date.now() / 1000 - Number(chargeControl.updated || 0)) < 30
+  property real chargeClock: Date.now() / 1000
+  readonly property bool chargeControlAvailable: chargeControl.supported === true && (chargeClock - Number(chargeControl.updated || 0)) < 45
   readonly property bool macLimitEnabled: chargeControlAvailable && Number(chargeControl.effective) < 100
   readonly property bool toppingUp: chargeControlAvailable && chargeControl.topup === true
   property bool chargeThresholdEnabled: false
@@ -164,11 +164,9 @@ Panel {
 
   function refresh() {
     if (!batteryPresent) return
-    if (!chargeControlRead.running) chargeControlRead.running = true
 
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
-    if (!systemProc.running) systemProc.running = true
     if (opened) {
       if (!powerImpactProc.running) powerImpactProc.running = true
       if (!batteryTemperatureProc.running) batteryTemperatureProc.running = true
@@ -184,8 +182,6 @@ Panel {
       batteryInfo = next
       root.recordDrainSample()
       root.refreshChargeThreshold()
-    } else {
-      systemInfo = next
     }
   }
 
@@ -343,12 +339,6 @@ Panel {
   }
 
   Process {
-    id: systemProc
-    command: ["omarchy-system-stats"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateKeyValue(text, "system") }
-  }
-
-  Process {
     id: actionProc
     onExited: root.refresh()
   }
@@ -373,17 +363,19 @@ Panel {
     chargeControlAction.running = true
   }
 
-  Process {
-    id: chargeControlRead
-    command: ["cat", "/var/lib/omarchy-charge/state.json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        try {
-          root.chargeControl = JSON.parse(text)
-          if (!root.limitEdited) root.pendingLimit = root.chargeControl.limit
-        } catch (e) { root.chargeControl = ({}) }
-      }
+  FileView {
+    id: chargeStateFile
+    path: "/var/lib/omarchy-charge/state.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoadFailed: root.chargeControl = ({})
+    onLoaded: {
+      try {
+        root.chargeControl = JSON.parse(text())
+        root.chargeClock = Date.now() / 1000
+        if (!root.limitEdited) root.pendingLimit = root.chargeControl.limit
+      } catch (e) { root.chargeControl = ({}) }
     }
   }
   Process {
@@ -392,15 +384,14 @@ Panel {
     onExited: function(code, status) {
       if (code === 0) root.limitEdited = false
       else if (!root.chargeError) root.chargeError = "Charge setting was not applied. Authentication may have been cancelled."
-      chargeControlRead.running = true
+      chargeStateFile.reload()
     }
   }
   Timer {
-    interval: 5000
+    interval: 15000
     running: true
     repeat: true
-    triggeredOnStart: true
-    onTriggered: if (!chargeControlRead.running) chargeControlRead.running = true
+    onTriggered: root.chargeClock = Date.now() / 1000
   }
 
   Process { id: chargeThresholdActionProc; onExited: root.refreshChargeThreshold() }
@@ -453,7 +444,7 @@ Panel {
 
   Process {
     id: hybridGpuCheckProc
-    command: ["omarchy", "hw", "hybrid", "gpu"]
+    command: ["sh", "-c", "command -v nvidia-smi >/dev/null && omarchy hw hybrid gpu"]
     onExited: function(exitCode) {
       root.hybridGpuPresent = exitCode === 0
       if (root.hybridGpuPresent) root.refreshGpuStatus()

@@ -55,3 +55,11 @@ All notable user-facing changes to this plugin. Format loosely follows [Keep a C
 - Add an optional root-owned BCLM helper/service, verified on MacBookPro8,2.
 - Make the panel scroll when its content exceeds the available display height.
 - Validate top-up/cancellation on hardware and recovery transitions with six tests.
+
+## 0.2.1 — Less background polling
+
+- Cache SMC key discovery in the charging service and avoid duplicate reads.
+- Write unchanged status only once per 15 seconds, retaining five-second unplug detection.
+- Watch the status file directly instead of spawning `cat` every five seconds.
+- Remove unused full-system statistics collection and skip NVIDIA queries on other GPUs.
+- Restart the helper when reinstalling it so updates actually take effect.

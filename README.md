@@ -213,8 +213,10 @@ sudo bash charging/install.sh
 The root-owned helper accepts only `set 20..100`, `topup`, `cancel`, and its
 service's `watch` command. GUI changes authenticate through polkit. The
 service serializes operations, verifies firmware readback, and stores its
-intent/status in `/var/lib/omarchy-charge/state.json`. The UI reads that file
-without privilege. The low-level writer is adapted from Jordan Brough's
+intent/status in `/var/lib/omarchy-charge/state.json`. The UI watches that file
+without privilege or periodic subprocesses. The service caches SMC discovery and
+refreshes unchanged status every 15 seconds while still checking unplugging every
+five seconds. The low-level writer is adapted from Jordan Brough's
 macbook-charge-limit to write **BCLM only**, retaining its MIT license in
 `charging/LICENSE.bclm`.
 
