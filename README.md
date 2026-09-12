@@ -5,10 +5,10 @@
 **An enhanced power/battery bar widget for [Omarchy](https://omarchy.org/) — everything the built-in Power widget does, plus a charge-threshold toggle, Quick Dim, Travel Mode, hybrid-GPU status, and a live power-draw history.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FAROICE-HQ%2Fomarchy-battery%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=informational)](manifest.json)
+[![Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcmyk%2Fomarchy-battery%2Fmain%2Fmanifest.json&query=%24.version&label=version&color=informational)](manifest.json)
 [![Omarchy plugin](https://img.shields.io/badge/omarchy-plugin-6d4aff)](https://omarchy.org/)
 
-*Part of [OMARCHY100](https://github.com/AROICE-HQ/omarchy100) — a 100-plugin suite for Omarchy.*
+*Maintained fork by [cmyk](https://github.com/cmyk), based on [AROICE-HQ/omarchy-battery](https://github.com/AROICE-HQ/omarchy-battery). Original plugin by aryan-techie / AROICE.*
 
 [Features](#features) • [Install](#install) • [Usage](#usage) • [How it works](#how-it-works)
 
@@ -81,7 +81,7 @@ New in this plugin:
 ## Install
 
 ```
-omarchy plugin add https://github.com/AROICE-HQ/omarchy-battery.git --enable
+omarchy plugin add https://github.com/cmyk/omarchy-battery.git --enable
 ```
 
 Or, to develop/inspect it locally first:
@@ -188,3 +188,44 @@ MIT — see [LICENSE](LICENSE).
 *Clear tools for a clear mind.*
 
 </div>
+
+## Intel Mac charging controls
+
+The charging section offers a 20–100% slider and **Apply**, plus **Top up to
+100%** / **Cancel top-up**. Applying a limit ends any top-up. The saved limit
+is restored within five seconds of detecting unplugging, including when the
+panel is closed. Top-up state persists across reboot: it continues if AC is
+connected, or restores the saved limit when the service starts on battery.
+An unplug/replug entirely while the machine is off cannot be detected.
+
+This backend requires an Intel MacBook exposing a one-byte `BCLM` SMC key.
+Verified on MacBookPro8,2 only; other models remain experimental. It does not
+force discharge. Existing UPower threshold controls remain available on other
+hardware. A stale or unavailable helper hides the Mac-specific section.
+
+Build and install the optional helper from this checkout:
+
+```sh
+cc -O2 -Wall -Wextra -Werror -o charging/omarchy-bclm charging/bclm.c
+sudo bash charging/install.sh
+```
+
+The root-owned helper accepts only `set 20..100`, `topup`, `cancel`, and its
+service's `watch` command. GUI changes authenticate through polkit. The
+service serializes operations, verifies firmware readback, and stores its
+intent/status in `/var/lib/omarchy-charge/state.json`. The UI reads that file
+without privilege. The low-level writer is adapted from Jordan Brough's
+macbook-charge-limit to write **BCLM only**, retaining its MIT license in
+`charging/LICENSE.bclm`.
+
+To remove the helper and restore normal charging, first run
+`sudo /usr/local/libexec/omarchy-charge set 100`, then disable the service with
+`sudo systemctl disable --now omarchy-charge.service`. Remove the two
+`/usr/local/libexec/omarchy-*` helper files and its service/state files if desired.
+Do not use a wildcard when removing helpers.
+
+Validation: `python3 -m unittest discover -s charging -v`.
+
+Plugin updates follow this fork’s `main` branch. The privileged charging helper
+is installed separately: after changes under `charging/`, rebuild and rerun its
+installer to update the system copy. Plugin updates never silently install root code.

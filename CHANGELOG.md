@@ -46,3 +46,12 @@ All notable user-facing changes to this plugin. Format loosely follows [Keep a C
 - Independent plugin id (`io.github.aryan-techie.battery`) — installs
   alongside the built-in widget rather than replacing it, so both can run
   side by side while you decide which one to keep on the bar.
+
+## Local charging controls — 2026-09-12
+
+- Add a 20–100% slider with explicit Apply and temporary top-up to 100%.
+- Restore the saved limit on unplug or cancellation, independently of the UI.
+- Display charge-limit holding and top-up status instead of misleading full status.
+- Add an optional root-owned BCLM helper/service, verified on MacBookPro8,2.
+- Make the panel scroll when its content exceeds the available display height.
+- Validate top-up/cancellation on hardware and recovery transitions with six tests.

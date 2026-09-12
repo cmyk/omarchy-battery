@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""Restricted charge-limit controller. All privileged paths are fixed."""
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+STATE = Path('/var/lib/omarchy-charge/state.json')
+LOCK = Path('/run/omarchy-charge.lock')
+SMC = Path('/sys/devices/platform/applesmc.768')
+BINARY = '/usr/local/libexec/omarchy-bclm'
+
+class MacBackend:
+    def __init__(self):
+        dmi = Path('/sys/class/dmi/id')
+        self.model = (dmi / 'product_name').read_text().strip()
+        if (dmi / 'sys_vendor').read_text().strip() != 'Apple Inc.' or not self.model.startswith('MacBook'):
+            raise RuntimeError('This backend requires an Intel MacBook with BCLM support')
+        self.index = None
+        selector = SMC / 'key_at_index'
+        old = selector.read_text().strip()
+        try:
+            for i in range(int((SMC / 'key_count').read_text())):
+                selector.write_text(str(i))
+                if (SMC / 'key_at_index_name').read_text().strip() == 'BCLM':
+                    if (SMC / 'key_at_index_data_length').read_text().strip() != '1':
+                        raise RuntimeError('Unexpected BCLM size')
+                    self.index = i
+                    break
+        finally:
+            selector.write_text(old)
+        if self.index is None:
+            raise RuntimeError('No supported BCLM charging control found')
+
+    def read(self):
+        selector = SMC / 'key_at_index'
+        old = selector.read_text().strip()
+        try:
+            selector.write_text(str(self.index))
+            if (SMC / 'key_at_index_name').read_text().strip() != 'BCLM':
+                raise RuntimeError('SMC key selection changed')
+            data = (SMC / 'key_at_index_data').read_bytes()
+            if len(data) != 1 or not 20 <= data[0] <= 100:
+                raise RuntimeError('Invalid BCLM value')
+            return data[0]
+        finally:
+            selector.write_text(old)
+
+    def write(self, limit):
+        subprocess.run([BINARY, 'set', str(limit)], check=True, capture_output=True, timeout=10)
+        if self.read() != limit:
+            raise RuntimeError('The firmware did not accept the requested limit')
+
+    def online(self):
+        adapters = list(Path('/sys/class/power_supply').glob('*/online'))
+        if not adapters:
+            raise RuntimeError('Cannot read adapter state')
+        return any(p.read_text().strip() == '1' for p in adapters)
+
+def save(state):
+    STATE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    temporary = STATE.with_suffix('.tmp')
+    temporary.write_text(json.dumps(state) + '\n')
+    temporary.chmod(0o644)
+    os.replace(temporary, STATE)
+
+def reconcile(backend, state, action='poll', value=None):
+    """Persist intent before applying it, allowing recovery after interruption."""
+    online = backend.online()
+    state = dict(state)
+    if action == 'set':
+        state.update(limit=value, topup=False)
+    elif action == 'topup':
+        if not online:
+            raise RuntimeError('Connect the charger before starting a top-up')
+        state['topup'] = True
+    elif action == 'cancel':
+        state['topup'] = False
+    if not online:
+        state['topup'] = False
+    state.update(supported=True, model=backend.model, online=online, error='', updated=time.time())
+    save(state)
+    target = 100 if state['topup'] else state['limit']
+    try:
+        if backend.read() != target:
+            backend.write(target)
+        state['effective'] = backend.read()
+    except Exception as error:
+        state['error'] = str(error)
+        save(state)
+        raise
+    save(state)
+    return state
+
+def step(action, value=None):
+    LOCK.touch(mode=0o600, exist_ok=True)
+    with LOCK.open('r+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        backend = MacBackend()
+        state = json.loads(STATE.read_text()) if STATE.exists() else {
+            'limit': backend.read(), 'topup': False
+        }
+        if type(state.get('limit')) is not int or not 20 <= state['limit'] <= 100:
+            raise RuntimeError('Invalid saved charge limit')
+        return reconcile(backend, state, action, value)
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] not in ('set', 'topup', 'cancel', 'watch'):
+        raise RuntimeError('Usage: omarchy-charge set 20..100 | topup | cancel | watch')
+    action = args[0]
+    value = None
+    if action == 'set':
+        if len(args) != 2 or not args[1].isdigit() or not 20 <= int(args[1]) <= 100:
+            raise RuntimeError('Charge limit must be an integer from 20 to 100')
+        value = int(args[1])
+    elif len(args) != 1:
+        raise RuntimeError('Unexpected arguments')
+    if os.geteuid() != 0:
+        raise RuntimeError('Administrator authentication is required')
+    if action != 'watch':
+        print(json.dumps(step(action, value)))
+        return
+    while True:
+        try:
+            step('poll')
+        except Exception as error:
+            print(str(error), file=sys.stderr, flush=True)
+        time.sleep(5)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
@@ -27,6 +28,13 @@ Panel {
 
   // ---- Charge threshold toggle, Quick Dim, Travel Mode, GPU status, watts
   //      history, and application impact -- not present in the built-in widget.
+  property var chargeControl: ({})
+  property int pendingLimit: 80
+  property bool limitEdited: false
+  property string chargeError: ""
+  readonly property bool chargeControlAvailable: chargeControl.supported === true && (Date.now() / 1000 - Number(chargeControl.updated || 0)) < 30
+  readonly property bool macLimitEnabled: chargeControlAvailable && Number(chargeControl.effective) < 100
+  readonly property bool toppingUp: chargeControlAvailable && chargeControl.topup === true
   property bool chargeThresholdEnabled: false
   property bool quickDimActive: false
   property var quickDimSavedBrightness: null
@@ -65,12 +73,14 @@ Panel {
 
   function batteryIcon() {
     var device = UPower.displayDevice
-    return Model.batteryIcon(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
+    return Model.batteryIcon(device, root.discharging, upowerStates(), (root.chargeThresholdEnabled || root.macLimitEnabled))
   }
 
   function modeLabel() {
+    if (root.toppingUp) return "Topping up to 100%"
+    if (root.macLimitEnabled && root.chargeThresholdActive) return "Charge limit reached"
     var device = UPower.displayDevice
-    return Model.modeLabel(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
+    return Model.modeLabel(device, root.discharging, upowerStates(), (root.chargeThresholdEnabled || root.macLimitEnabled))
   }
 
   function profileIcon(name) {
@@ -87,9 +97,11 @@ Panel {
   }
   readonly property bool chargeThresholdActive: {
     var device = UPower.displayDevice
-    return Model.chargeThresholdActive(device, root.discharging, upowerStates(), root.chargeThresholdEnabled)
+    if (root.macLimitEnabled && device && device.isPresent && !root.discharging
+        && (device.state === UPowerDeviceState.FullyCharged || device.state === UPowerDeviceState.PendingCharge)) return true
+    return Model.chargeThresholdActive(device, root.discharging, upowerStates(), (root.chargeThresholdEnabled || root.macLimitEnabled))
   }
-  readonly property bool batteryFull: fullyCharged || (!root.discharging && batteryFraction >= 1)
+  readonly property bool batteryFull: !chargeThresholdActive && (fullyCharged || (!root.discharging && batteryFraction >= 1))
   readonly property bool batteryFlowIdle: batteryFull || chargeThresholdActive
 
   // 0..1 charge level, used by the visual progress bar.
@@ -143,6 +155,8 @@ Panel {
   readonly property bool rotatingPhrases: activePhrases.length > 0
 
   readonly property string heroStatusText: {
+    if (root.toppingUp) return root.batteryFull ? "Ready for your trip" : "Topping up to 100%"
+    if (root.macLimitEnabled && root.chargeThresholdActive) return "Charge limit reached"
     if (fullyCharged) return "Fully charged"
     if (rotatingPhrases) return activePhrases[phraseIndex % activePhrases.length]
     return modeLabel()
@@ -150,6 +164,7 @@ Panel {
 
   function refresh() {
     if (!batteryPresent) return
+    if (!chargeControlRead.running) chargeControlRead.running = true
 
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
@@ -292,6 +307,7 @@ Panel {
     function hide() { root.close() }
     function toggle() { root.toggle() }
     function togglePercentage() { root.togglePercentage() }
+    function chargingStatus(): string { return JSON.stringify({state: root.chargeControl, available: root.chargeControlAvailable, error: root.chargeError}) }
   }
 
   onOpenedChanged: {
@@ -346,6 +362,45 @@ Panel {
         if (value !== null) root.chargeThresholdEnabled = value
       }
     }
+  }
+
+  function applyChargeAction(action, value) {
+    if (chargeControlAction.running) return
+    root.chargeError = ""
+    var args = ["pkexec", "/usr/local/libexec/omarchy-charge", action]
+    if (action === "set") args.push(String(value))
+    chargeControlAction.command = args
+    chargeControlAction.running = true
+  }
+
+  Process {
+    id: chargeControlRead
+    command: ["cat", "/var/lib/omarchy-charge/state.json"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.chargeControl = JSON.parse(text)
+          if (!root.limitEdited) root.pendingLimit = root.chargeControl.limit
+        } catch (e) { root.chargeControl = ({}) }
+      }
+    }
+  }
+  Process {
+    id: chargeControlAction
+    stderr: StdioCollector { onStreamFinished: if (text.trim()) root.chargeError = text.trim() }
+    onExited: function(code, status) {
+      if (code === 0) root.limitEdited = false
+      else if (!root.chargeError) root.chargeError = "Charge setting was not applied. Authentication may have been cancelled."
+      chargeControlRead.running = true
+    }
+  }
+  Timer {
+    interval: 5000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: if (!chargeControlRead.running) chargeControlRead.running = true
   }
 
   Process { id: chargeThresholdActionProc; onExited: root.refreshChargeThreshold() }
@@ -526,6 +581,13 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
+      Flickable {
+        anchors.fill: parent
+        contentHeight: column.implicitHeight
+        contentWidth: width
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        Controls.ScrollBar.vertical: Controls.ScrollBar { policy: Controls.ScrollBar.AsNeeded }
       Column {
         id: column
         anchors.left: parent.left
@@ -662,7 +724,7 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair {
               label: root.chargeThresholdActive ? "Charge limit" : (root.batteryFull ? "State" : (root.discharging ? "Time left" : "Time to full"))
-              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFull ? "Fully charged" : (root.batteryInfo.time || "—"))
+              value: root.chargeThresholdActive ? (root.macLimitEnabled ? root.chargeControl.effective + "%" : (root.batteryInfo.threshold || "-")) : (root.batteryFull ? "Fully charged" : (root.batteryInfo.time || "—"))
             }
             InfoPair {
               label: root.chargeThresholdActive ? "Battery state" : (root.batteryFull ? "Charge rate" : (root.discharging ? "Discharging" : "Charging"))
@@ -729,7 +791,7 @@ Panel {
         //            gate omarchy-battery-status already applies before
         //            printing the "threshold" field. ----------
         Item {
-          visible: !!root.batteryInfo.threshold
+          visible: !!root.batteryInfo.threshold && !root.chargeControlAvailable
           width: parent.width
           height: visible ? chargeThresholdColumn.implicitHeight : 0
 
@@ -752,6 +814,54 @@ Panel {
               fontFamily: root.bar.fontFamily
               onClicked: root.toggleChargeThreshold()
             }
+          }
+        }
+
+        Column {
+          width: parent.width
+          visible: root.chargeControlAvailable
+          spacing: Style.space(8)
+          PanelSeparator { foreground: root.bar.foreground }
+          PanelSectionHeader { text: "CHARGING"; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily }
+          InfoPair { label: "Charge limit"; value: root.pendingLimit + "%" }
+          PanelSlider {
+            id: chargeSlider
+            width: parent.width
+            bar: root.bar
+            minimum: 20; maximum: 100; step: 5; integer: true
+            value: root.pendingLimit
+            enabled: !chargeControlAction.running
+            Accessible.name: "Maximum battery charge percentage"
+            onMoved: function(value) { root.pendingLimit = Math.round(value); root.limitEdited = true }
+          }
+          Row {
+            width: parent.width; spacing: Style.space(8)
+            Button {
+              width: (parent.width - parent.spacing) * 0.3
+              text: chargeControlAction.running ? "Wait…" : "Apply"
+              fontSize: Style.font.bodySmall
+              opacity: enabled ? 1 : 0.45
+              enabled: !chargeControlAction.running && (root.limitEdited || !!root.chargeError)
+              bordered: true; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+              onClicked: root.applyChargeAction("set", root.pendingLimit)
+            }
+            Button {
+              width: (parent.width - parent.spacing) * 0.7
+              text: root.toppingUp ? "Cancel top-up" : "Top up to 100%"
+              fontSize: Style.font.bodySmall
+              opacity: enabled ? 1 : 0.45
+              enabled: !chargeControlAction.running && (root.toppingUp || (!root.discharging && Number(root.chargeControl.limit) < 100))
+              bordered: true; foreground: root.bar.foreground; fontFamily: root.bar.fontFamily
+              onClicked: root.applyChargeAction(root.toppingUp ? "cancel" : "topup", 0)
+            }
+          }
+          Text {
+            width: parent.width; wrapMode: Text.WordWrap
+            text: root.chargeError || root.chargeControl.error || (root.toppingUp
+              ? "Topping up to 100%. Restores " + root.chargeControl.limit + "% when unplugged."
+              : "Top-up restores your " + root.chargeControl.limit + "% limit when unplugged.")
+            color: root.chargeError || root.chargeControl.error ? Color.accent : Qt.alpha(root.bar.foreground, 0.65)
+            font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall
           }
         }
 
@@ -944,6 +1054,7 @@ Panel {
             }
           }
         }
+      }
       }
     }
   }

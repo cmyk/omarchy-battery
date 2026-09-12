@@ -1,0 +1,12 @@
+[Unit]
+Description=Maintain battery charge limit and restore it after top-up
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/omarchy-charge watch
+Restart=on-failure
+RestartSec=5
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
